@@ -1,27 +1,49 @@
 #include <queue>
 #include <mutex>
 #include <set>
+#include <vector>
+#include <algorithm>
+#include <unordered_map>
 
 using namespace std;
 
 template <typename T>
-struct EndPoint;
+class EndPoint;
+
+template <typename T>
+class Reader;
 
 template <typename T>
 struct Channel {
+
+//private:
+    int refs = 0;
 
 public:
     mutex mutex;
     queue<T> queue;
 
-    Channel() { }
+    bool AddEndPoint(EndPoint<T>& endpoint) {
+        if (endpoint.ConnectedToChannel() || 
+            endpoint.pChannel == this) { return false; }
 
-    bool ConnectEndPoint(EndPoint<T>& endpoint) {
-
-       // if (endpoint.ConnectedToChannel()) { return false; }
-
+        refs++;
         endpoint.pChannel = this;
         return true;
+    }
+    bool AddEndPoint(EndPoint<T>* endpoint) {
+        return AddEndPoint(*endpoint);
+    }
+    bool RemoveEndPoint(EndPoint<T>& endpoint) {
+        if (!endpoint.ConnectedToChannel() || 
+            endpoint.pChannel != this) { return false; }
+
+        refs--;
+        endpoint.pChannel = nullptr;
+        return true;
+    }
+    bool RemoveEndPoint(EndPoint<T>* endpoint) {
+       return RemoveEndPoint(*endpoint);
     }
 };
 
@@ -34,15 +56,12 @@ protected:
 
     Channel<T>* pChannel = nullptr;
 
-    EndPoint() {};
-    EndPoint(const EndPoint<T>& endpoint) {
-        pChannel = endpoint.pChannel;
-    }
-    EndPoint(EndPoint<T>&& endpoint) {
-        pChannel = move(endpoint.pChannel);
-    }
+    EndPoint() {}
+    EndPoint(const EndPoint<T>& other) { other.pChannel->AddEndPoint(this); }
+    EndPoint(EndPoint<T>&& other) noexcept : pChannel(move(other.pChannel)) {}
+    EndPoint(Channel<T>& channel) { channel.AddEndPoint(this); }
 
-    ~EndPoint() {};
+    ~EndPoint() {}
 
     EndPoint<T>& operator=(const EndPoint<T>& other) {
         pChannel = other.pChannel;
@@ -57,15 +76,19 @@ protected:
 public:
 
     bool ConnectedToChannel() const { return pChannel != nullptr; }
+    bool Empty() const { return !ConnectedToChannel() || pChannel->queue.empty(); }
 
 };
 
 template <typename T>
 class Writer : public EndPoint<T> {
-    public:
+
+public:
     Writer() : EndPoint<T>() {};
     Writer(const Writer<T>& writer) : EndPoint<T>(writer) {}
     Writer(Writer<T>&& writer) : EndPoint<T>(writer) {}
+    Writer(const Reader<T>& reader) : EndPoint<T>(reader) {}
+    Writer(Channel<T>& channel) : EndPoint<T>(channel) {}
 
     ~Writer() {};
 
@@ -79,24 +102,27 @@ class Writer : public EndPoint<T> {
         return *this;
     }
 
-    void Write(T&& message) {
+    bool Write(T&& message) {
 
-        if (!this->ConnectedToChannel()) { return; }
+        if (!this->ConnectedToChannel()) { return false; }
 
         lock_guard lock(this->pChannel->mutex);
 
         this->pChannel->queue.push(forward<T>(message));
+        return true;
     }
 
 };
 
 template <typename T>
 class Reader : public EndPoint<T> {
-    public:
+    
+public:
     Reader() : EndPoint<T>() {};
     Reader(const Reader<T>& reader) : EndPoint<T>(reader) {}
     Reader(Reader<T>&& reader) : EndPoint<T>(reader) {}
     Reader(const Writer<T>& writer) : EndPoint<T>(writer) {}
+    Reader(Channel<T>& channel) : EndPoint<T>(channel) {}
 
     ~Reader() {};
 
